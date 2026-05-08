@@ -3011,12 +3011,27 @@ $('install-btn').addEventListener('click', async () => {
   if (outcome === 'accepted') { $('install-btn').classList.remove('visible'); deferredInstallPrompt = null; }
 });
 
-// File Handling API
+// ===== FILE HANDLING API =====
+// Registered in manifest.json → file_handlers.
+// When the user double-clicks a supported file the OS launches the installed
+// PWA and passes the file handle(s) here via launchQueue.
+// We wait until init() has finished (DB open, library loaded) before opening
+// so the book is correctly added to the library on first launch.
 if ('launchQueue' in window) {
   window.launchQueue.setConsumer(async launchParams => {
-    for (const handle of launchParams.files) {
-      const file = await handle.getFile();
-      openFile(file);
+    if (!launchParams.files.length) return;
+
+    // Resolve all FileSystemFileHandle → File objects up front
+    const files = await Promise.all(launchParams.files.map(h => h.getFile()));
+
+    // Open the first file straight away; subsequent files (rare) open after
+    // a short stagger so loading toasts don't collide
+    for (let i = 0; i < files.length; i++) {
+      if (i === 0) {
+        await openFile(files[i]);
+      } else {
+        setTimeout(() => openFile(files[i]), i * 600);
+      }
     }
   });
 }
