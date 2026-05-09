@@ -9,9 +9,9 @@
 <meta name="description" content="Folio — A premium browser ebook reader">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;700&family=Noto+Naskh+Arabic:wght@400;700&display=swap" rel="stylesheet">
+<!-- Fonts served locally after build step downloads them into lib/ -->
+<link rel="stylesheet" href="lib/nastaliq.css">
+<link rel="stylesheet" href="lib/naskh.css">
 <title>Folio — Ebook Reader</title>
 <style>
 /* ===== CSS CUSTOM PROPERTIES ===== */
@@ -657,27 +657,31 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 
 /* ===== AUTO-HIDE TOOLBAR ===== */
-/* When enabled, toolbar slides up out of view until cursor is near the top */
+/*
+ * Strategy: toolbar is position:sticky at top:0 inside the column flex body.
+ * When auto-hide is on we animate margin-top to -var(--toolbar-h) which pulls
+ * the toolbar fully out of the flow — the app area expands to fill the gap.
+ * We then use a JS mousemove listener on the document to detect when the
+ * cursor is within the trigger zone (top 4px of viewport) and toggle the
+ * .toolbar-peek class, which resets margin-top to 0.
+ * A short hide-delay timer prevents the toolbar from vanishing the instant
+ * the cursor leaves it, giving the user time to click controls.
+ */
+#toolbar {
+  /* Keep position in normal flow so siblings shift when it hides */
+  position: sticky;
+  top: 0;
+  /* Animated hide/show via margin */
+  margin-top: 0;
+  transition: margin-top 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+  /* Ensure it sits above content while shown */
+  z-index: 100;
+}
 body.toolbar-autohide #toolbar {
-  transform: translateY(calc(-100% - 2px));
-  transition: transform 0.25s ease;
+  margin-top: calc(-1 * var(--toolbar-h) - 3px); /* -3px hides the box-shadow too */
 }
 body.toolbar-autohide.toolbar-peek #toolbar {
-  transform: translateY(0);
-  transition: transform 0.2s ease;
-}
-/* Invisible trigger strip at the very top of the viewport */
-#toolbar-trigger {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 8px;
-  z-index: 200;
-  pointer-events: none; /* only active when autohide is on */
-}
-body.toolbar-autohide #toolbar-trigger {
-  pointer-events: auto;
+  margin-top: 0;
 }
 
 /* Search highlights */
@@ -1065,9 +1069,6 @@ body.toolbar-autohide #toolbar-trigger {
   </button>
   <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
 </div>
-
-<!-- Invisible strip at top — reveals toolbar when auto-hide is active -->
-<div id="toolbar-trigger"></div>
 
 <!-- MAIN APP -->
 <div id="app">
@@ -1620,7 +1621,7 @@ function applySettings() {
 // ===== EPUB PARSER =====
 async function parseEPUB(arrayBuffer) {
   // Load JSZip
-  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', 'JSZip');
+  await loadScript('./lib/jszip.min.js', 'JSZip');
   const zip = await JSZip.loadAsync(arrayBuffer);
 
   // Find OPF
@@ -1816,8 +1817,8 @@ async function parseText(file, format) {
 let pdfJS = null;
 async function loadPDFJS() {
   if (pdfJS) return pdfJS;
-  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  await loadScript('./lib/pdf.min.js', 'pdfjsLib');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = './lib/pdf.worker.min.js';
   pdfJS = pdfjsLib;
   return pdfJS;
 }
@@ -1972,7 +1973,7 @@ function getPDFCurrentPage() {
 let mammothLoaded = false;
 async function loadMammoth() {
   if (mammothLoaded) return;
-  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js', 'mammoth');
+  await loadScript('./lib/mammoth.min.js', 'mammoth');
   mammothLoaded = true;
 }
 async function openDOCX(arrayBuffer) {
@@ -3052,17 +3053,60 @@ $('sp-auto-hide-toolbar').addEventListener('change', e => {
 });
 
 // ===== AUTO-HIDE TOOLBAR =====
+//
+// We track cursor Y via mousemove on the document.
+// Show:  cursor enters the top TRIGGER_PX of the viewport → immediate peek.
+// Hide:  cursor has been outside the toolbar for HIDE_DELAY_MS → remove peek.
+// This avoids the flicker caused by enter/leave events firing between elements.
+
+const TRIGGER_PX   = 6;   // px from top of viewport that triggers reveal
+const HIDE_DELAY_MS = 900; // ms after cursor leaves toolbar before it hides
+
+let toolbarHideTimer = null;
+
 function applyAutoHideToolbar(enabled) {
   document.body.classList.toggle('toolbar-autohide', !!enabled);
+  // If we're disabling, make sure peek state is also cleared
+  if (!enabled) {
+    document.body.classList.remove('toolbar-peek');
+    clearTimeout(toolbarHideTimer);
+  }
 }
 
-const toolbarTrigger = $('toolbar-trigger');
-toolbarTrigger.addEventListener('mouseenter', () => document.body.classList.add('toolbar-peek'));
-toolbarTrigger.addEventListener('mouseleave', () => document.body.classList.remove('toolbar-peek'));
-toolbar.addEventListener('mouseleave', e => {
-  // Only hide if cursor has left downward (not into the trigger strip)
-  if (e.clientY > toolbar.getBoundingClientRect().bottom) {
-    document.body.classList.remove('toolbar-peek');
+function isPointerOverToolbar(y) {
+  // "Over toolbar" means either within the trigger zone OR within the toolbar's
+  // rendered height (which may be 0 while hidden — we use the variable value).
+  const toolbarH = toolbar.offsetHeight || parseInt(
+    getComputedStyle(document.documentElement).getPropertyValue('--toolbar-h')
+  ) || 52;
+  return y <= toolbarH + 4; // +4px tolerance
+}
+
+document.addEventListener('mousemove', e => {
+  if (!state.settings.autoHideToolbar) return;
+
+  const y = e.clientY;
+
+  if (y <= TRIGGER_PX) {
+    // Cursor in trigger zone — show immediately, cancel any pending hide
+    clearTimeout(toolbarHideTimer);
+    document.body.classList.add('toolbar-peek');
+    return;
+  }
+
+  if (document.body.classList.contains('toolbar-peek')) {
+    if (isPointerOverToolbar(y)) {
+      // Cursor is still over the visible toolbar — stay open, cancel hide
+      clearTimeout(toolbarHideTimer);
+    } else {
+      // Cursor has left the toolbar area — start the hide timer if not running
+      if (!toolbarHideTimer) {
+        toolbarHideTimer = setTimeout(() => {
+          toolbarHideTimer = null;
+          document.body.classList.remove('toolbar-peek');
+        }, HIDE_DELAY_MS);
+      }
+    }
   }
 });
 
