@@ -9,6 +9,9 @@
 <meta name="description" content="Folio — A premium browser ebook reader">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;700&family=Noto+Naskh+Arabic:wght@400;700&display=swap" rel="stylesheet">
 <title>Folio — Ebook Reader</title>
 <style>
 /* ===== CSS CUSTOM PROPERTIES ===== */
@@ -640,10 +643,42 @@ input:focus, select:focus { border-color: var(--accent); }
 
 /* Highlight colors */
 .hl-yellow { background: rgba(255,230,0,0.35); border-radius: 2px; }
-.hl-green { background: rgba(50,200,100,0.3); border-radius: 2px; }
-.hl-blue { background: rgba(50,150,255,0.3); border-radius: 2px; }
-.hl-pink { background: rgba(255,80,160,0.3); border-radius: 2px; }
+.hl-green  { background: rgba(50,200,100,0.3); border-radius: 2px; }
+.hl-blue   { background: rgba(50,150,255,0.3); border-radius: 2px; }
+.hl-pink   { background: rgba(255,80,160,0.3); border-radius: 2px; }
 .hl-orange { background: rgba(255,140,50,0.35); border-radius: 2px; }
+
+/* TTS active sentence highlight */
+.tts-reading-line {
+  background: rgba(212,147,90,0.28);
+  border-radius: 2px;
+  outline: 1.5px solid rgba(212,147,90,0.5);
+  transition: background 0.2s;
+}
+
+/* ===== AUTO-HIDE TOOLBAR ===== */
+/* When enabled, toolbar slides up out of view until cursor is near the top */
+body.toolbar-autohide #toolbar {
+  transform: translateY(calc(-100% - 2px));
+  transition: transform 0.25s ease;
+}
+body.toolbar-autohide.toolbar-peek #toolbar {
+  transform: translateY(0);
+  transition: transform 0.2s ease;
+}
+/* Invisible trigger strip at the very top of the viewport */
+#toolbar-trigger {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 8px;
+  z-index: 200;
+  pointer-events: none; /* only active when autohide is on */
+}
+body.toolbar-autohide #toolbar-trigger {
+  pointer-events: auto;
+}
 
 /* Search highlights */
 .search-hl { background: rgba(212,147,90,0.5); border-radius: 2px; }
@@ -987,7 +1022,7 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 </style>
 </head>
-<body data-theme="dark">
+<body data-theme="light">
 
 <!-- TOOLBAR -->
 <div id="toolbar">
@@ -1018,7 +1053,7 @@ input:focus, select:focus { border-color: var(--accent); }
   </button>
   <button class="tb-btn" id="btn-mode" title="Reading Mode">
     <svg viewBox="0 0 24 24"><path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z"/></svg>
-    <span id="mode-label">Single</span>
+    <span id="mode-label">Scroll</span>
   </button>
   <div class="tb-spacer"></div>
   <button class="tb-btn" id="btn-settings" title="Settings">
@@ -1031,11 +1066,14 @@ input:focus, select:focus { border-color: var(--accent); }
   <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
 </div>
 
+<!-- Invisible strip at top — reveals toolbar when auto-hide is active -->
+<div id="toolbar-trigger"></div>
+
 <!-- MAIN APP -->
 <div id="app">
 
   <!-- SIDEBAR -->
-  <div id="sidebar">
+  <div id="sidebar" class="hidden">
     <div class="sidebar-tabs">
       <button class="sidebar-tab active" data-tab="library">Library</button>
       <button class="sidebar-tab" data-tab="toc">TOC</button>
@@ -1100,11 +1138,20 @@ input:focus, select:focus { border-color: var(--accent); }
       <div class="tb-group" data-group="font">
         <label>Font</label>
         <select id="sel-font">
-          <option value="Georgia,'Times New Roman',serif">Serif</option>
-          <option value="'Helvetica Neue',Arial,sans-serif">Sans</option>
-          <option value="'Courier New',monospace">Mono</option>
+          <option value="Georgia,'Times New Roman',serif">Georgia (Serif)</option>
           <option value="'Palatino Linotype',Palatino,serif">Palatino</option>
           <option value="Garamond,serif">Garamond</option>
+          <option value="'Book Antiqua',serif">Book Antiqua</option>
+          <option value="'Helvetica Neue',Arial,sans-serif">Helvetica (Sans)</option>
+          <option value="'Segoe UI',system-ui,sans-serif">Segoe UI</option>
+          <option value="'Gill Sans','Gill Sans MT',sans-serif">Gill Sans</option>
+          <option value="Optima,Candara,sans-serif">Optima</option>
+          <option value="'Courier New',monospace">Courier (Mono)</option>
+          <option value="'Fira Code','Cascadia Code',monospace">Fira Code</option>
+          <option value="'Noto Nastaleeq','Jameel Noori Nastaleeq','Faiz Lahori Nastaleeq',serif">Nastaleeq (Urdu)</option>
+          <option value="'Noto Naskh Arabic','Arial Unicode MS',serif">Naskh (Arabic)</option>
+          <option value="'Noto Sans CJK SC','Source Han Sans',sans-serif">CJK Sans</option>
+          <option value="'Noto Serif CJK SC','Source Han Serif',serif">CJK Serif</option>
         </select>
       </div>
 
@@ -1264,6 +1311,7 @@ input:focus, select:focus { border-color: var(--accent); }
 
 <!-- Settings Panel -->
 <div id="settings-panel">
+
   <div class="settings-section-title">Appearance</div>
   <div class="settings-row">
     <label>Theme</label>
@@ -1273,19 +1321,57 @@ input:focus, select:focus { border-color: var(--accent); }
       <option value="sepia">Sepia</option>
     </select>
   </div>
+  <div class="settings-row">
+    <label>Auto-hide toolbar</label>
+    <input type="checkbox" id="sp-auto-hide-toolbar">
+  </div>
+
   <div class="settings-section-title">Typography</div>
   <div class="settings-row">
     <label>Font Family</label>
     <select id="sp-font">
-      <option value="Georgia,'Times New Roman',serif">Serif</option>
-      <option value="'Helvetica Neue',Arial,sans-serif">Sans</option>
-      <option value="'Courier New',monospace">Mono</option>
+      <option value="Georgia,'Times New Roman',serif">Georgia (Serif)</option>
+      <option value="'Palatino Linotype',Palatino,serif">Palatino</option>
+      <option value="Garamond,serif">Garamond</option>
+      <option value="'Book Antiqua',serif">Book Antiqua</option>
+      <option value="'Helvetica Neue',Arial,sans-serif">Helvetica (Sans)</option>
+      <option value="'Segoe UI',system-ui,sans-serif">Segoe UI</option>
+      <option value="'Gill Sans','Gill Sans MT',sans-serif">Gill Sans</option>
+      <option value="Optima,Candara,sans-serif">Optima</option>
+      <option value="'Courier New',monospace">Courier (Mono)</option>
+      <option value="'Fira Code','Cascadia Code',monospace">Fira Code</option>
+      <option value="'Noto Nastaleeq','Jameel Noori Nastaleeq','Faiz Lahori Nastaleeq',serif">Nastaleeq (Urdu)</option>
+      <option value="'Noto Naskh Arabic','Arial Unicode MS',serif">Naskh (Arabic)</option>
+      <option value="'Noto Sans CJK SC','Source Han Sans',sans-serif">CJK Sans</option>
+      <option value="'Noto Serif CJK SC','Source Han Serif',serif">CJK Serif</option>
     </select>
   </div>
   <div class="settings-row">
     <label>Font Size</label>
     <input type="number" id="sp-size" min="10" max="42" value="18" style="width:70px">
   </div>
+
+  <div class="settings-section-title">Reading</div>
+  <div class="settings-row">
+    <label>Default Mode</label>
+    <select id="sp-reading-mode">
+      <option value="continuous">Scroll</option>
+      <option value="single">Single Page</option>
+    </select>
+  </div>
+
+  <div class="settings-section-title">Text-to-Speech</div>
+  <div class="settings-row">
+    <label>Voice</label>
+    <select id="sp-tts-voice" style="max-width:140px">
+      <option value="">System default</option>
+    </select>
+  </div>
+  <div class="settings-row">
+    <label>Highlight sentence</label>
+    <input type="checkbox" id="sp-tts-highlight" checked>
+  </div>
+
 </div>
 
 <!-- Toast Container -->
@@ -1304,13 +1390,15 @@ const state = {
   currentBook: null,      // { id, title, author, format, chapters, toc, cover }
   chapters: [],           // array of { id, title, html }
   currentChapter: 0,
-  readingMode: 'single',  // 'single' | 'continuous'
+  readingMode: 'continuous', // 'single' | 'continuous' — persisted in settings
   toc: [],
   highlights: [],         // persisted per book
   searchMatches: [],
   searchIndex: 0,
   ttsUtterance: null,
   ttsActive: false,
+  ttsSentences: null,    // sentence array currently being spoken
+  ttsSentenceIdx: 0,     // index into ttsSentences
   pendingHighlight: null, // { range, color }
   pendingNoteHighlight: null,
   pdfDoc: null,
@@ -1318,14 +1406,18 @@ const state = {
   pdfScale: 1.5,
   pdfMode: 'single',
   settings: {
-    theme: 'dark',
+    theme: 'light',
     font: "Georgia,'Times New Roman',serif",
     fontSize: 18,
     lineHeight: 1.75,
     pageWidth: 720,
     align: 'left',
     layout: '',
-    zoom: 100
+    zoom: 100,
+    readingMode: 'continuous',  // persisted so toggle survives reload
+    ttsHighlightLine: true,     // highlight sentence being read
+    autoHideToolbar: false,     // hide toolbar until cursor near top
+    ttsVoiceURI: '',            // selected TTS voice URI
   },
   library: [],            // array of book metadata
   savedSelection: null,
@@ -1473,6 +1565,9 @@ function loadProgress(bookId) {
 function applySettings() {
   const s = state.settings;
 
+  // Sync readingMode from settings so it survives reload
+  state.readingMode = s.readingMode || 'continuous';
+
   // Theme
   document.body.setAttribute('data-theme', s.theme);
 
@@ -1495,6 +1590,9 @@ function applySettings() {
   readerContent.style.transform       = `scale(${s.zoom / 100})`;
   readerContent.style.transformOrigin = 'top center';
 
+  // Auto-hide toolbar
+  applyAutoHideToolbar(s.autoHideToolbar);
+
   // Sync all toolbar controls to match current state
   $('sel-font').value       = s.font;
   $('rng-size').value       = s.fontSize;
@@ -1506,9 +1604,17 @@ function applySettings() {
   $('sel-layout').value     = s.layout;
   $('rng-zoom').value       = s.zoom;
   $('zoom-val').textContent = s.zoom + '%';
-  $('sp-theme').value       = s.theme;
-  $('sp-font').value        = s.font;
-  $('sp-size').value        = s.fontSize;
+
+  // Sync settings panel controls
+  $('sp-theme').value              = s.theme;
+  $('sp-font').value               = s.font;
+  $('sp-size').value               = s.fontSize;
+  $('sp-reading-mode').value       = state.readingMode;
+  $('sp-tts-highlight').checked    = !!s.ttsHighlightLine;
+  $('sp-auto-hide-toolbar').checked = !!s.autoHideToolbar;
+
+  // Mode label in toolbar
+  $('mode-label').textContent = state.readingMode === 'single' ? 'Single' : 'Scroll';
 }
 
 // ===== EPUB PARSER =====
@@ -2557,24 +2663,123 @@ $('search-close').addEventListener('click', () => { searchBar.classList.remove('
 $('btn-search').addEventListener('click', () => { searchBar.classList.toggle('active'); if (searchBar.classList.contains('active')) { searchInput.focus(); } });
 
 // ===== TTS =====
-function startTTS(text) {
-  if (!text) return;
-  window.speechSynthesis.cancel();
-  state.ttsActive = true;
-  ttsBar.classList.add('active');
-  $('tts-play').textContent = '⏸';
-  const preview = text.slice(0, 100) + (text.length > 100 ? '…' : '');
-  $('tts-text-preview').textContent = preview;
 
-  const utter = new SpeechSynthesisUtterance(text);
-  utter.rate = parseFloat($('tts-rate').value);
-  utter.onend = () => { state.ttsActive = false; $('tts-play').textContent = '▶'; };
-  utter.onerror = () => { state.ttsActive = false; $('tts-play').textContent = '▶'; };
-  state.ttsUtterance = utter;
+// Sentence-level walking: split text into sentences for line-highlight tracking
+function splitSentences(text) {
+  // Split on . ! ? followed by whitespace or end, keeping delimiter
+  return text.match(/[^.!?]+[.!?]*/g)?.map(s => s.trim()).filter(Boolean) || [text];
+}
+
+// Active highlight span for the currently-spoken sentence
+let ttsHighlightSpan = null;
+
+function clearTTSHighlight() {
+  if (ttsHighlightSpan && ttsHighlightSpan.parentNode) {
+    ttsHighlightSpan.replaceWith(...ttsHighlightSpan.childNodes);
+  }
+  ttsHighlightSpan = null;
+}
+
+// Find and highlight the sentence in readerContent that matches `sentence`
+function highlightTTSSentence(sentence) {
+  if (!sentence) return;
+  clearTTSHighlight();
+  const walker = document.createTreeWalker(readerContent, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const idx = node.textContent.indexOf(sentence);
+    if (idx >= 0) {
+      try {
+        const range = document.createRange();
+        range.setStart(node, idx);
+        range.setEnd(node, idx + sentence.length);
+        const mark = document.createElement('span');
+        mark.className = 'tts-reading-line';
+        range.surroundContents(mark);
+        ttsHighlightSpan = mark;
+        mark.scrollIntoView({ block: 'nearest' });
+      } catch {}
+      break;
+    }
+  }
+}
+
+// Speak an array of sentences sequentially so we can track position
+function speakSentences(sentences, index = 0) {
+  if (index >= sentences.length) {
+    state.ttsActive = false;
+    $('tts-play').textContent = '▶';
+    clearTTSHighlight();
+    return;
+  }
+
+  const sentence = sentences[index];
+  const voice    = getSelectedVoice();
+  const rate     = parseFloat($('tts-rate').value);
+
+  if (state.settings.ttsHighlightLine && readerContent.isConnected) {
+    highlightTTSSentence(sentence);
+  }
+
+  $('tts-text-preview').textContent = sentence.slice(0, 100) + (sentence.length > 100 ? '…' : '');
+
+  const utter    = new SpeechSynthesisUtterance(sentence);
+  utter.rate     = rate;
+  if (voice) utter.voice = voice;
+
+  utter.onend = () => {
+    if (!state.ttsActive) return; // stopped externally
+    speakSentences(sentences, index + 1);
+  };
+  utter.onerror = e => {
+    if (e.error === 'interrupted') return; // user stopped — not an error
+    speakSentences(sentences, index + 1);
+  };
+
+  state.ttsUtterance  = utter;
+  state.ttsSentences  = sentences;
+  state.ttsSentenceIdx = index;
   window.speechSynthesis.speak(utter);
 }
 
-$('tts-play').addEventListener('click', () => {
+function startTTS(text) {
+  if (!text) return;
+  window.speechSynthesis.cancel();
+  clearTTSHighlight();
+  state.ttsActive = true;
+  ttsBar.classList.add('active');
+  $('tts-play').textContent = '⏸';
+
+  const sentences = splitSentences(text);
+  speakSentences(sentences, 0);
+}
+
+function getSelectedVoice() {
+  const uri = state.settings.ttsVoiceURI;
+  if (!uri) return null;
+  return window.speechSynthesis.getVoices().find(v => v.voiceURI === uri) || null;
+}
+
+// Populate voice <select> once voices are available
+function populateTTSVoices() {
+  const sel    = $('sp-tts-voice');
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return;
+
+  sel.innerHTML = '<option value="">System default</option>';
+  voices.forEach(v => {
+    const opt   = document.createElement('option');
+    opt.value   = v.voiceURI;
+    opt.textContent = `${v.name} (${v.lang})`;
+    if (v.voiceURI === state.settings.ttsVoiceURI) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+// Voices load asynchronously in some browsers
+window.speechSynthesis.onvoiceschanged = populateTTSVoices;
+
+$('tts-play').addEventListener('click', async () => {
   if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
     window.speechSynthesis.pause();
     $('tts-play').textContent = '▶';
@@ -2582,33 +2787,46 @@ $('tts-play').addEventListener('click', () => {
     window.speechSynthesis.resume();
     $('tts-play').textContent = '⏸';
   } else {
-    // Start TTS from current page
     let text = '';
     if (state.currentBook?.format === 'PDF') {
-      text = extractPDFTextForTTS();
+      text = await extractPDFTextForTTS();
     } else {
       text = readerContent.innerText || readerContent.textContent;
     }
     startTTS(text);
   }
 });
+
 $('tts-stop').addEventListener('click', () => {
   window.speechSynthesis.cancel();
   state.ttsActive = false;
+  clearTTSHighlight();
   $('tts-play').textContent = '▶';
   ttsBar.classList.remove('active');
 });
+
 $('btn-tts').addEventListener('click', () => {
   ttsBar.classList.toggle('active');
-  if (!ttsBar.classList.contains('active')) { window.speechSynthesis.cancel(); state.ttsActive = false; }
+  if (!ttsBar.classList.contains('active')) {
+    window.speechSynthesis.cancel();
+    state.ttsActive = false;
+    clearTTSHighlight();
+  }
 });
+
+// Rate change: cancel and restart from the current sentence with the new rate
 $('tts-rate').addEventListener('input', () => {
   const rate = parseFloat($('tts-rate').value);
   $('tts-rate-label').textContent = rate.toFixed(1) + '×';
-  if (state.ttsUtterance && window.speechSynthesis.speaking) {
-    const pos = window.speechSynthesis.speaking;
-    // Restart with new rate — simple approach
-    if (state.ttsUtterance) { state.ttsUtterance.rate = rate; }
+
+  if (state.ttsActive && state.ttsSentences) {
+    window.speechSynthesis.cancel();
+    // Brief pause lets cancel() fully flush before we restart
+    setTimeout(() => {
+      if (state.ttsActive) {
+        speakSentences(state.ttsSentences, state.ttsSentenceIdx ?? 0);
+      }
+    }, 120);
   }
 });
 
@@ -2676,8 +2894,11 @@ $('btn-next').addEventListener('click', nextPage);
 $('btn-settings').addEventListener('click', () => $('settings-panel').classList.toggle('active'));
 $('btn-mode').addEventListener('click', () => {
   state.readingMode = state.readingMode === 'single' ? 'continuous' : 'single';
+  state.settings.readingMode = state.readingMode;
+  saveSettings();
   $('mode-label').textContent = state.readingMode === 'single' ? 'Single' : 'Scroll';
-  $('click-left').style.display = state.readingMode === 'single' ? '' : 'none';
+  $('sp-reading-mode').value  = state.readingMode;
+  $('click-left').style.display  = state.readingMode === 'single' ? '' : 'none';
   $('click-right').style.display = state.readingMode === 'single' ? '' : 'none';
   if (state.currentBook?.format !== 'PDF' && state.chapters.length) {
     renderChapters();
@@ -2790,7 +3011,8 @@ $('rng-zoom').addEventListener('input', e => {
   applySettings(); saveSettings();
 });
 
-// Settings Panel
+// ===== SETTINGS PANEL HANDLERS =====
+
 $('sp-theme').addEventListener('change', e => {
   state.settings.theme = e.target.value;
   applySettings(); saveSettings();
@@ -2799,10 +3021,49 @@ $('sp-theme').addEventListener('change', e => {
 $('sp-font').addEventListener('change', e => {
   state.settings.font = e.target.value;
   applySettings(); saveSettings();
+  $('sel-font').value = e.target.value;
 });
 $('sp-size').addEventListener('input', e => {
   state.settings.fontSize = parseInt(e.target.value) || 18;
   applySettings(); saveSettings();
+});
+$('sp-reading-mode').addEventListener('change', e => {
+  state.readingMode          = e.target.value;
+  state.settings.readingMode = e.target.value;
+  saveSettings();
+  $('mode-label').textContent    = state.readingMode === 'single' ? 'Single' : 'Scroll';
+  $('click-left').style.display  = state.readingMode === 'single' ? '' : 'none';
+  $('click-right').style.display = state.readingMode === 'single' ? '' : 'none';
+  if (state.chapters.length) renderChapters();
+});
+$('sp-tts-voice').addEventListener('change', e => {
+  state.settings.ttsVoiceURI = e.target.value;
+  saveSettings();
+});
+$('sp-tts-highlight').addEventListener('change', e => {
+  state.settings.ttsHighlightLine = e.target.checked;
+  if (!e.target.checked) clearTTSHighlight();
+  saveSettings();
+});
+$('sp-auto-hide-toolbar').addEventListener('change', e => {
+  state.settings.autoHideToolbar = e.target.checked;
+  applyAutoHideToolbar(e.target.checked);
+  saveSettings();
+});
+
+// ===== AUTO-HIDE TOOLBAR =====
+function applyAutoHideToolbar(enabled) {
+  document.body.classList.toggle('toolbar-autohide', !!enabled);
+}
+
+const toolbarTrigger = $('toolbar-trigger');
+toolbarTrigger.addEventListener('mouseenter', () => document.body.classList.add('toolbar-peek'));
+toolbarTrigger.addEventListener('mouseleave', () => document.body.classList.remove('toolbar-peek'));
+toolbar.addEventListener('mouseleave', e => {
+  // Only hide if cursor has left downward (not into the trigger strip)
+  if (e.clientY > toolbar.getBoundingClientRect().bottom) {
+    document.body.classList.remove('toolbar-peek');
+  }
 });
 
 // ===== SIDEBAR TABS =====
@@ -3074,6 +3335,9 @@ async function init() {
 
   // Start with all toolbar groups hidden — they reveal when a document opens
   updateToolbarForFormat('NONE');
+
+  // Populate TTS voice list (may already be loaded)
+  populateTTSVoices();
 
   // Set sidebar to library tab
   document.querySelector('.sidebar-tab[data-tab="library"]').click();
