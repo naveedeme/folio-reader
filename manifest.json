@@ -2,8 +2,8 @@
   "name": "Folio — Ebook Reader",
   "short_name": "Folio",
   "description": "A premium browser-based ebook reader supporting EPUB, PDF, DOCX, and more.",
-  "start_url": "/",
-  "scope": "/",
+  "start_url": "/folio-reader/",
+  "scope": "/folio-reader/",
   "display": "standalone",
   "background_color": "#16130f",
   "theme_color": "#d4935a",
@@ -24,7 +24,7 @@
   ],
   "file_handlers": [
     {
-      "action": "/",
+      "action": "/folio-reader/",
       "accept": {
         "application/epub+zip":                                                    [".epub"],
         "application/pdf":                                                         [".pdf"],
