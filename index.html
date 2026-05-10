@@ -737,6 +737,23 @@ body.toolbar-autohide.toolbar-peek #toolbar {
 }
 .pdf-text-layer span::selection { background: rgba(212,147,90,0.45); color: transparent; }
 
+/* PDF highlight overlay rectangles — painted on top of the page wrap */
+.pdf-hl {
+  position: absolute;
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  z-index: 5;
+}
+[data-theme="dark"]  .pdf-hl { mix-blend-mode: screen; }
+[data-theme="sepia"] .pdf-hl { mix-blend-mode: multiply; }
+
+.pdf-hl-yellow { background: rgba(255,230,0,0.45); }
+.pdf-hl-green  { background: rgba(50,200,100,0.4); }
+.pdf-hl-blue   { background: rgba(50,150,255,0.4); }
+.pdf-hl-pink   { background: rgba(255,80,160,0.4); }
+.pdf-hl-orange { background: rgba(255,140,50,0.45); }
+
 /* ===== DOCX VIEWER ===== */
 #docx-iframe {
   display: none;
@@ -1405,7 +1422,8 @@ const state = {
   pdfDoc: null,
   pdfPage: 1,
   pdfScale: 1.5,
-  pdfMode: 'single',
+  pdfScaleMode: 'custom',
+  pdfHighlights: [],     // highlight overlays for the current PDF
   settings: {
     theme: 'light',
     font: "Georgia,'Times New Roman',serif",
@@ -1422,7 +1440,8 @@ const state = {
   },
   library: [],            // array of book metadata
   savedSelection: null,
-  googleAccessToken: null
+  googleAccessToken: null,
+  launchHandled: false    // set true when OS file-handler delivers a file
 };
 
 // ===== DOM REFS =====
@@ -1856,8 +1875,10 @@ async function openPDF(arrayBuffer, bookId) {
     docxIframe.classList.remove('active');
     pdfViewer.classList.add('active');
     updateToolbarForFormat('PDF');
+    loadPDFHighlights(bookId);
 
     await renderPDFPages();
+    renderPDFHighlightsList();
   } catch(e) {
     toast('Error loading PDF: ' + e.message, 'error');
   }
@@ -1865,19 +1886,20 @@ async function openPDF(arrayBuffer, bookId) {
 }
 
 async function renderPDFPages() {
-  pdfViewer.innerHTML = '';
-  state.pdfRenderingContinuous = false;
-
   if (state.readingMode === 'single') {
-    await renderOnePDFPage(state.pdfPage);
+    // Build the new page entirely off-DOM, then swap in one frame — no blink
+    const wrap = await buildPDFPageWrap(state.pdfPage);
+    pdfViewer.innerHTML = '';
+    pdfViewer.appendChild(wrap);
   } else {
-    // Continuous mode: render ALL pages so scroll is not artificially capped
-    state.pdfRenderingContinuous = true;
+    // Continuous mode: render ALL pages so scroll has no artificial ceiling
+    pdfViewer.innerHTML = '';
     const numPages = state.pdfDoc.numPages;
     for (let i = 1; i <= numPages; i++) {
-      await renderOnePDFPage(i, true);
+      const wrap = await buildPDFPageWrap(i);
+      pdfViewer.appendChild(wrap);
     }
-    // After all pages rendered, scroll to the saved page
+    // Restore scroll position to the saved page
     const target = pdfViewer.querySelector(`.pdf-page-wrap[data-page="${state.pdfPage}"]`);
     if (target) target.scrollIntoView({ block: 'start' });
   }
@@ -1895,25 +1917,24 @@ pdfViewer.addEventListener('scroll', () => {
   }
 });
 
-// Render one PDF page at device-pixel-ratio quality with an accurate text layer.
-async function renderOnePDFPage(pageNum, append = false) {
+// Build one PDF page wrap (canvas + text layer) entirely off-DOM.
+// The caller appends it when ready, allowing atomic DOM updates.
+async function buildPDFPageWrap(pageNum) {
   const scale  = await getPDFEffectiveScale(pageNum);
   const dpr    = window.devicePixelRatio || 1;
   const page   = await state.pdfDoc.getPage(pageNum);
 
-  // CSS-pixel viewport (what the user sees)
   const cssVP  = page.getViewport({ scale });
-  // Physical-pixel viewport (what we render into the canvas)
   const physVP = page.getViewport({ scale: scale * dpr });
 
-  // Wrapper — CSS size matches cssVP
+  // Wrapper sized to CSS pixels
   const wrap = document.createElement('div');
   wrap.className    = 'pdf-page-wrap';
   wrap.dataset.page = pageNum;
   wrap.style.width  = cssVP.width  + 'px';
   wrap.style.height = cssVP.height + 'px';
 
-  // Canvas — physical pixels, CSS-scaled back down so it looks crisp
+  // Canvas rendered at physical resolution, CSS-scaled for sharpness
   const canvas              = document.createElement('canvas');
   canvas.width              = physVP.width;
   canvas.height             = physVP.height;
@@ -1923,43 +1944,41 @@ async function renderOnePDFPage(pageNum, append = false) {
   canvas.style.borderRadius = '3px';
   wrap.appendChild(canvas);
 
-  // Text layer — exact CSS size, spans positioned relative to cssVP
+  // Selectable text layer over the canvas
   const textLayer              = document.createElement('div');
   textLayer.className          = 'pdf-text-layer';
   textLayer.style.width        = cssVP.width  + 'px';
   textLayer.style.height       = cssVP.height + 'px';
+  textLayer.dataset.page       = pageNum;
   wrap.appendChild(textLayer);
 
-  if (append) pdfViewer.appendChild(wrap);
-  else { pdfViewer.innerHTML = ''; pdfViewer.appendChild(wrap); }
-
-  // Render graphics at full DPR quality
+  // Render graphics
   const ctx = canvas.getContext('2d');
   await page.render({ canvasContext: ctx, viewport: physVP }).promise;
 
-  // Build text layer using CSS-pixel viewport so positions are correct
+  // Populate text layer
   const textContent = await page.getTextContent();
   textContent.items.forEach(item => {
     if (!item.str.trim()) return;
-
-    // Transform the item into CSS viewport coordinates
     const tx = pdfJS.Util.transform(cssVP.transform, item.transform);
-
-    const span              = document.createElement('span');
-    span.textContent        = item.str;
-    span.style.left         = tx[4] + 'px';
-    span.style.bottom       = tx[5] + 'px'; // PDF y=0 is bottom; cssVP.transform already flips
-    span.style.fontSize     = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]) + 'px';
-    span.style.fontFamily   = item.fontName || 'sans-serif';
-    // Stretch/shrink horizontally to match the rendered glyph width
+    const span            = document.createElement('span');
+    span.textContent      = item.str;
+    span.style.left       = tx[4] + 'px';
+    span.style.bottom     = tx[5] + 'px';
+    span.style.fontSize   = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]) + 'px';
+    span.style.fontFamily = item.fontName || 'sans-serif';
     if (item.width && item.width > 0) {
-      const expectedPx = item.width * cssVP.scale;
-      span.style.width        = expectedPx + 'px';
-      span.style.display      = 'inline-block';
-      span.style.whiteSpace   = 'pre';
+      span.style.width      = (item.width * cssVP.scale) + 'px';
+      span.style.display    = 'inline-block';
+      span.style.whiteSpace = 'pre';
     }
     textLayer.appendChild(span);
   });
+
+  // Re-apply any saved highlights for this page
+  applyPDFHighlightsToPage(wrap, pageNum);
+
+  return wrap;
 }
 
 // Re-render all visible PDF pages when scale changes (width slider / fit buttons).
@@ -1982,6 +2001,133 @@ function getPDFCurrentPage() {
     if (area > bestArea) { bestArea = area; best = parseInt(w.dataset.page); }
   });
   return best || state.pdfPage;
+}
+
+// ===== PDF HIGHLIGHTS =====
+// Stored separately from text-reader highlights: keyed by bookId + pageNum.
+// Each entry: { id, pageNum, text, color, note, timestamp, rects[] }
+// rects are percentage-based (left/top/width/height as 0-1) so they survive
+// re-renders at different scales.
+
+function savePDFHighlights() {
+  if (!state.currentBook) return;
+  localStorage.setItem('folio_pdfhl_' + state.currentBook.id, JSON.stringify(state.pdfHighlights || []));
+}
+function loadPDFHighlights(bookId) {
+  try { state.pdfHighlights = JSON.parse(localStorage.getItem('folio_pdfhl_' + bookId) || '[]'); }
+  catch { state.pdfHighlights = []; }
+}
+
+// Convert a client-space DOMRect to percentage coordinates relative to a pageWrap
+function rectToPercent(domRect, wrapEl) {
+  const box = wrapEl.getBoundingClientRect();
+  return {
+    left:   (domRect.left   - box.left)  / box.width,
+    top:    (domRect.top    - box.top)   / box.height,
+    width:  domRect.width               / box.width,
+    height: domRect.height              / box.height,
+  };
+}
+
+// Paint stored highlights onto a page wrap element
+function applyPDFHighlightsToPage(wrapEl, pageNum) {
+  if (!state.pdfHighlights) return;
+  const pageHls = state.pdfHighlights.filter(h => h.pageNum === pageNum);
+  pageHls.forEach(hl => {
+    hl.rects.forEach(r => {
+      const mark = document.createElement('div');
+      mark.className       = 'pdf-hl pdf-hl-' + hl.color;
+      mark.dataset.hlId    = hl.id;
+      mark.style.position  = 'absolute';
+      mark.style.left      = (r.left   * 100) + '%';
+      mark.style.top       = (r.top    * 100) + '%';
+      mark.style.width     = (r.width  * 100) + '%';
+      mark.style.height    = (r.height * 100) + '%';
+      mark.style.pointerEvents = 'none';
+      wrapEl.appendChild(mark);
+    });
+  });
+}
+
+// Called from the context menu when a colour is chosen and we are in PDF mode
+function applyPDFHighlight(color, note = '') {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) {
+    toast('Select text in the PDF first', 'info', 1500);
+    return;
+  }
+
+  const range    = sel.getRangeAt(0);
+  const text     = sel.toString().trim();
+  if (!text) return;
+
+  // Find which page wrap the selection is inside
+  const textLayer = range.commonAncestorContainer.parentElement?.closest('.pdf-text-layer');
+  const wrapEl    = textLayer?.parentElement;
+  if (!wrapEl) return;
+
+  const pageNum = parseInt(wrapEl.dataset.page);
+  const clientRects = [...range.getClientRects()];
+  const rects = clientRects.map(r => rectToPercent(r, wrapEl));
+
+  const hlData = {
+    id:        uid(),
+    pageNum,
+    text:      text.slice(0, 300),
+    color,
+    note,
+    rects,
+    timestamp: Date.now()
+  };
+
+  state.pdfHighlights.push(hlData);
+  savePDFHighlights();
+
+  // Paint immediately onto the existing wrap
+  applyPDFHighlightsToPage(wrapEl, pageNum);
+  sel.removeAllRanges();
+
+  renderPDFHighlightsList();
+  toast('Highlighted', 'success', 1200);
+}
+
+function renderPDFHighlightsList() {
+  hlList.innerHTML = '';
+  const hls = state.pdfHighlights || [];
+  if (!hls.length) {
+    hlList.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px">No highlights yet.</div>';
+    return;
+  }
+  hls.forEach(hl => {
+    const el = document.createElement('div');
+    el.className = 'hl-item';
+    el.innerHTML = `
+      <button class="hl-del" data-id="${hl.id}">✕</button>
+      <div class="hl-text">${escHtml(hl.text)}</div>
+      ${hl.note ? `<div class="hl-note">${escHtml(hl.note)}</div>` : ''}
+      <div class="hl-meta">Page ${hl.pageNum} · ${new Date(hl.timestamp).toLocaleDateString()}</div>
+    `;
+    el.querySelector('.hl-del').addEventListener('click', e => {
+      e.stopPropagation();
+      state.pdfHighlights = state.pdfHighlights.filter(h => h.id !== hl.id);
+      savePDFHighlights();
+      // Remove painted rects from DOM
+      document.querySelectorAll(`[data-hl-id="${hl.id}"]`).forEach(n => n.remove());
+      renderPDFHighlightsList();
+    });
+    el.addEventListener('click', () => {
+      // Jump to the page containing this highlight
+      state.pdfPage = hl.pageNum;
+      if (state.readingMode === 'continuous') {
+        const target = pdfViewer.querySelector(`.pdf-page-wrap[data-page="${hl.pageNum}"]`);
+        if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      } else {
+        renderPDFPages();
+      }
+      updatePageIndicator();
+    });
+    hlList.appendChild(el);
+  });
 }
 
 // ===== DOCX VIEWER =====
@@ -2335,6 +2481,7 @@ async function reOpenBook(meta) {
     if (meta.format === 'PDF') {
       state.currentBook = meta;
       loadHighlights(meta.id);
+      loadPDFHighlights(meta.id);
       hideLoading();
       await openPDF(buf, meta.id);
     } else if (meta.format === 'DOCX' || meta.format === 'DOC') {
@@ -2591,9 +2738,9 @@ ctxMenu.querySelectorAll('.hl-color-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const color = btn.dataset.color;
     ctxMenu.classList.remove('active');
-    if (savedRange) {
-      state.pendingHighlight = { range: savedRange, color };
-      // Check if note wanted
+    if (state.currentBook?.format === 'PDF') {
+      applyPDFHighlight(color);
+    } else if (savedRange) {
       applyHighlight(savedRange, color);
       savedRange = null;
     }
@@ -3415,11 +3562,10 @@ if ('launchQueue' in window) {
   window.launchQueue.setConsumer(async launchParams => {
     if (!launchParams.files.length) return;
 
-    // Resolve all FileSystemFileHandle → File objects up front
-    const files = await Promise.all(launchParams.files.map(h => h.getFile()));
+    // Signal init() to skip its auto-reopen of the last book
+    state.launchHandled = true;
 
-    // Open the first file straight away; subsequent files (rare) open after
-    // a short stagger so loading toasts don't collide
+    const files = await Promise.all(launchParams.files.map(h => h.getFile()));
     for (let i = 0; i < files.length; i++) {
       if (i === 0) {
         await openFile(files[i]);
@@ -3470,22 +3616,20 @@ async function init() {
   applySettings();
   renderLibrary();
 
-  // Start with all toolbar groups hidden — they reveal when a document opens
   updateToolbarForFormat('NONE');
-
-  // Populate TTS voice list (may already be loaded)
   populateTTSVoices();
-
-  // Set sidebar to library tab
   document.querySelector('.sidebar-tab[data-tab="library"]').click();
 
-  // Reopen last book if any
+  // Reopen last book after a short delay so the launchQueue (file handler)
+  // has a chance to fire first. If a file is delivered via launchQueue,
+  // it sets state.launchHandled = true and we skip the auto-reopen.
   const lastBookId = localStorage.getItem('folio_last_book');
   if (lastBookId) {
-    const meta = state.library.find(b => b.id === lastBookId);
-    if (meta) {
-      setTimeout(() => reOpenBook(meta), 300);
-    }
+    setTimeout(() => {
+      if (state.launchHandled) return; // file was opened via OS double-click
+      const meta = state.library.find(b => b.id === lastBookId);
+      if (meta) reOpenBook(meta);
+    }, 800); // 800ms is enough for launchQueue to resolve
   }
 }
 
