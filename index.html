@@ -2804,7 +2804,7 @@ $('ctx-tts-here').addEventListener('click', async () => {
   // PDF: extract text from current page onward
   if (state.currentBook?.format === 'PDF') {
     const text = await extractPDFTextForTTS();
-    if (text) startTTS(text);
+    if (text) startTTS(text, null);
     return;
   }
 
@@ -2821,11 +2821,10 @@ $('ctx-tts-here').addEventListener('click', async () => {
   }
 
   if (!textFromHere) {
-    // Fallback: read full chapter
     textFromHere = readerContent.innerText || readerContent.textContent;
   }
 
-  if (textFromHere) startTTS(textFromHere);
+  if (textFromHere) startTTS(textFromHere, readerContent);
 });
 
 // Note Modal
@@ -2901,50 +2900,99 @@ $('btn-search').addEventListener('click', () => { searchBar.classList.toggle('ac
 
 // ===== TTS =====
 
-// Sentence-level walking: split text into sentences for line-highlight tracking
-function splitSentences(text) {
-  // Split on . ! ? followed by whitespace or end, keeping delimiter
-  return text.match(/[^.!?]+[.!?]*/g)?.map(s => s.trim()).filter(Boolean) || [text];
-}
+// ── Text-node map ─────────────────────────────────────────────────────────────
+// Built once per startTTS call. Maps every character in the reader's visible
+// text to the exact DOM text node and offset it lives in.
+// This is the only reliable way to highlight across nested elements.
 
-// Active highlight span for the currently-spoken sentence
-let ttsHighlightSpan = null;
+function buildTextNodeMap(rootEl) {
+  // Returns { flatText: string, map: Array<{node, offset}> }
+  const map  = [];   // index i → { node, offset } for flatText[i]
+  const parts = [];  // collected text segments
 
-function clearTTSHighlight() {
-  if (ttsHighlightSpan && ttsHighlightSpan.parentNode) {
-    ttsHighlightSpan.replaceWith(...ttsHighlightSpan.childNodes);
-  }
-  ttsHighlightSpan = null;
-}
-
-// Find and highlight the sentence in readerContent that matches `sentence`
-function highlightTTSSentence(sentence) {
-  if (!sentence) return;
-  clearTTSHighlight();
-  const walker = document.createTreeWalker(readerContent, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
   let node;
   while ((node = walker.nextNode())) {
-    const idx = node.textContent.indexOf(sentence);
-    if (idx >= 0) {
-      try {
-        const range = document.createRange();
-        range.setStart(node, idx);
-        range.setEnd(node, idx + sentence.length);
-        const mark = document.createElement('span');
-        mark.className = 'tts-reading-line';
-        range.surroundContents(mark);
-        ttsHighlightSpan = mark;
-        mark.scrollIntoView({ block: 'nearest' });
-      } catch {}
-      break;
+    const t = node.textContent;
+    for (let i = 0; i < t.length; i++) {
+      map.push({ node, offset: i });
     }
+    parts.push(t);
+  }
+
+  return { flatText: parts.join(''), map };
+}
+
+// ── Sentence splitter ─────────────────────────────────────────────────────────
+// Splits flatText into sentence objects that carry their exact character range.
+
+function splitSentencesFromFlatText(flatText) {
+  const sentences = [];
+  // Match sequences ending with .  !  ?  or end-of-string
+  const re = /[^.!?\n]+[.!?]*/g;
+  let m;
+  while ((m = re.exec(flatText)) !== null) {
+    const text = m[0].trim();
+    if (!text) continue;
+    // Find the actual start of the trimmed text within the match
+    const leadingWS = m[0].length - m[0].trimStart().length;
+    sentences.push({
+      text,
+      startIdx: m.index + leadingWS,
+      endIdx:   m.index + m[0].trimEnd().length
+    });
+  }
+  return sentences;
+}
+
+// ── TTS highlight state ───────────────────────────────────────────────────────
+let ttsHighlightSpans = [];
+let ttsTextMap        = null;   // { flatText, map } — rebuilt on each startTTS
+
+function clearTTSHighlight() {
+  ttsHighlightSpans.forEach(span => {
+    if (!span.parentNode) return;
+    const parent = span.parentNode;
+    span.replaceWith(...span.childNodes);
+    parent.normalize();  // merge split text nodes so the map stays valid
+  });
+  ttsHighlightSpans = [];
+}
+
+// Highlight a sentence using its pre-computed character indices in the map.
+// Never uses indexOf — positions are exact.
+function highlightTTSSentence(sentence) {
+  if (!sentence || !ttsTextMap) return;
+  clearTTSHighlight();
+
+  const { map } = ttsTextMap;
+  const { startIdx, endIdx } = sentence;
+
+  if (startIdx >= map.length || endIdx > map.length || startIdx >= endIdx) return;
+
+  const startEntry = map[startIdx];
+  const endEntry   = map[endIdx - 1];
+  if (!startEntry || !endEntry) return;
+
+  try {
+    const range = document.createRange();
+    range.setStart(startEntry.node, startEntry.offset);
+    range.setEnd(endEntry.node, endEntry.offset + 1);
+
+    const spans = wrapRangeInMark(range, 'tts-reading-line', 'tts-current');
+    ttsHighlightSpans = spans;
+    if (spans.length) spans[0].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } catch(e) {
+    // Silently skip — the map may be stale if DOM was mutated externally
   }
 }
 
-// Speak an array of sentences sequentially so we can track position
+// ── Sequential sentence speaker ───────────────────────────────────────────────
 function speakSentences(sentences, index = 0) {
   if (index >= sentences.length) {
-    state.ttsActive = false;
+    state.ttsActive      = false;
+    state.ttsSentences   = null;
+    state.ttsSentenceIdx = 0;
     $('tts-play').textContent = '▶';
     clearTTSHighlight();
     return;
@@ -2954,32 +3002,34 @@ function speakSentences(sentences, index = 0) {
   const voice    = getSelectedVoice();
   const rate     = parseFloat($('tts-rate').value);
 
+  // Highlight before speaking so the mark is visible from the first word
   if (state.settings.ttsHighlightLine && readerContent.isConnected) {
     highlightTTSSentence(sentence);
   }
 
-  $('tts-text-preview').textContent = sentence.slice(0, 100) + (sentence.length > 100 ? '…' : '');
+  $('tts-text-preview').textContent =
+    sentence.text.slice(0, 100) + (sentence.text.length > 100 ? '…' : '');
 
-  const utter    = new SpeechSynthesisUtterance(sentence);
-  utter.rate     = rate;
+  const utter  = new SpeechSynthesisUtterance(sentence.text);
+  utter.rate   = rate;
   if (voice) utter.voice = voice;
 
   utter.onend = () => {
-    if (!state.ttsActive) return; // stopped externally
+    if (!state.ttsActive) return;
     speakSentences(sentences, index + 1);
   };
   utter.onerror = e => {
-    if (e.error === 'interrupted') return; // user stopped — not an error
+    if (e.error === 'interrupted') return;
     speakSentences(sentences, index + 1);
   };
 
-  state.ttsUtterance  = utter;
-  state.ttsSentences  = sentences;
+  state.ttsUtterance   = utter;
+  state.ttsSentences   = sentences;
   state.ttsSentenceIdx = index;
   window.speechSynthesis.speak(utter);
 }
 
-function startTTS(text) {
+function startTTS(text, rootEl) {
   if (!text) return;
   window.speechSynthesis.cancel();
   clearTTSHighlight();
@@ -2987,8 +3037,19 @@ function startTTS(text) {
   ttsBar.classList.add('active');
   $('tts-play').textContent = '⏸';
 
-  const sentences = splitSentences(text);
-  speakSentences(sentences, 0);
+  // Build the character map from the live DOM (not from the plain text string)
+  // so highlight positions are always exact
+  if (rootEl && state.settings.ttsHighlightLine) {
+    ttsTextMap = buildTextNodeMap(rootEl);
+    const sentences = splitSentencesFromFlatText(ttsTextMap.flatText);
+    speakSentences(sentences, 0);
+  } else {
+    // PDF or highlight-off: no map needed, speak plain text in chunks
+    ttsTextMap = null;
+    const sentences = splitSentencesFromFlatText(text)
+      .map(s => ({ ...s })); // keep shape consistent
+    speakSentences(sentences, 0);
+  }
 }
 
 function getSelectedVoice() {
@@ -3024,13 +3085,12 @@ $('tts-play').addEventListener('click', async () => {
     window.speechSynthesis.resume();
     $('tts-play').textContent = '⏸';
   } else {
-    let text = '';
     if (state.currentBook?.format === 'PDF') {
-      text = await extractPDFTextForTTS();
+      const text = await extractPDFTextForTTS();
+      startTTS(text, null);
     } else {
-      text = readerContent.innerText || readerContent.textContent;
+      startTTS(readerContent.innerText || readerContent.textContent, readerContent);
     }
-    startTTS(text);
   }
 });
 
@@ -3058,11 +3118,13 @@ $('tts-rate').addEventListener('input', () => {
 
   if (state.ttsActive && state.ttsSentences) {
     window.speechSynthesis.cancel();
-    // Brief pause lets cancel() fully flush before we restart
     setTimeout(() => {
-      if (state.ttsActive) {
-        speakSentences(state.ttsSentences, state.ttsSentenceIdx ?? 0);
+      if (!state.ttsActive) return;
+      // Rebuild map after normalize() may have merged text nodes
+      if (readerContent.isConnected && state.currentBook?.format !== 'PDF') {
+        ttsTextMap = buildTextNodeMap(readerContent);
       }
+      speakSentences(state.ttsSentences, state.ttsSentenceIdx ?? 0);
     }, 120);
   }
 });
@@ -3276,6 +3338,17 @@ $('sp-reading-mode').addEventListener('change', e => {
 $('sp-tts-voice').addEventListener('change', e => {
   state.settings.ttsVoiceURI = e.target.value;
   saveSettings();
+
+  if (state.ttsActive && state.ttsSentences) {
+    window.speechSynthesis.cancel();
+    setTimeout(() => {
+      if (!state.ttsActive) return;
+      if (readerContent.isConnected && state.currentBook?.format !== 'PDF') {
+        ttsTextMap = buildTextNodeMap(readerContent);
+      }
+      speakSentences(state.ttsSentences, state.ttsSentenceIdx ?? 0);
+    }, 120);
+  }
 });
 $('sp-tts-highlight').addEventListener('change', e => {
   state.settings.ttsHighlightLine = e.target.checked;
