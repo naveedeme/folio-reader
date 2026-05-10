@@ -1866,19 +1866,34 @@ async function openPDF(arrayBuffer, bookId) {
 
 async function renderPDFPages() {
   pdfViewer.innerHTML = '';
-  const numPages = state.pdfDoc.numPages;
+  state.pdfRenderingContinuous = false;
 
   if (state.readingMode === 'single') {
     await renderOnePDFPage(state.pdfPage);
   } else {
-    const start = Math.max(1, state.pdfPage - 1);
-    const end   = Math.min(numPages, state.pdfPage + 8);
-    for (let i = start; i <= end; i++) {
+    // Continuous mode: render ALL pages so scroll is not artificially capped
+    state.pdfRenderingContinuous = true;
+    const numPages = state.pdfDoc.numPages;
+    for (let i = 1; i <= numPages; i++) {
       await renderOnePDFPage(i, true);
     }
+    // After all pages rendered, scroll to the saved page
+    const target = pdfViewer.querySelector(`.pdf-page-wrap[data-page="${state.pdfPage}"]`);
+    if (target) target.scrollIntoView({ block: 'start' });
   }
   updatePageIndicator();
 }
+
+// Track current page from scroll position in continuous PDF mode
+pdfViewer.addEventListener('scroll', () => {
+  if (state.readingMode !== 'continuous' || !state.pdfDoc) return;
+  const page = getPDFCurrentPage();
+  if (page && page !== state.pdfPage) {
+    state.pdfPage = page;
+    updatePageIndicator();
+    saveProgress(state.currentBook?.id, state.pdfPage);
+  }
+});
 
 // Render one PDF page at device-pixel-ratio quality with an accurate text layer.
 async function renderOnePDFPage(pageNum, append = false) {
@@ -2208,33 +2223,57 @@ function updateTOCActive() {
 // ===== NAVIGATION =====
 function nextPage() {
   if (state.currentBook?.format === 'PDF') {
-    if (state.pdfPage < state.pdfDoc.numPages) {
-      state.pdfPage++;
+    const total = state.pdfDoc.numPages;
+    if (state.pdfPage >= total) return;
+    state.pdfPage++;
+    saveProgress(state.currentBook.id, state.pdfPage);
+    if (state.readingMode === 'continuous') {
+      // Pages are already rendered — just scroll to the next one
+      const target = pdfViewer.querySelector(`.pdf-page-wrap[data-page="${state.pdfPage}"]`);
+      if (target) target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else {
       renderPDFPages();
-      saveProgress(state.currentBook.id, state.pdfPage);
     }
+    updatePageIndicator();
     return;
   }
   if (state.currentChapter < state.chapters.length - 1) {
     state.currentChapter++;
-    renderChapters();
+    if (state.readingMode === 'continuous') {
+      // Chapters already rendered — scroll to the target section
+      const target = readerContent.querySelector(`.chapter-section[data-chapter="${state.currentChapter}"]`);
+      if (target) target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else {
+      renderChapters();
+    }
     updatePageIndicator();
     updateTOCActive();
     saveProgress(state.currentBook?.id, state.currentChapter);
   }
 }
+
 function prevPage() {
   if (state.currentBook?.format === 'PDF') {
-    if (state.pdfPage > 1) {
-      state.pdfPage--;
+    if (state.pdfPage <= 1) return;
+    state.pdfPage--;
+    saveProgress(state.currentBook.id, state.pdfPage);
+    if (state.readingMode === 'continuous') {
+      const target = pdfViewer.querySelector(`.pdf-page-wrap[data-page="${state.pdfPage}"]`);
+      if (target) target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else {
       renderPDFPages();
-      saveProgress(state.currentBook.id, state.pdfPage);
     }
+    updatePageIndicator();
     return;
   }
   if (state.currentChapter > 0) {
     state.currentChapter--;
-    renderChapters();
+    if (state.readingMode === 'continuous') {
+      const target = readerContent.querySelector(`.chapter-section[data-chapter="${state.currentChapter}"]`);
+      if (target) target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else {
+      renderChapters();
+    }
     updatePageIndicator();
     updateTOCActive();
     saveProgress(state.currentBook?.id, state.currentChapter);
@@ -2360,59 +2399,109 @@ function renderTOC() {
 }
 
 // ===== HIGHLIGHTS =====
-function applyHighlight(range, color, note = '') {
-  try {
+
+// surroundContents() fails when the selection crosses element boundaries.
+// This function wraps each individual text node in the range separately,
+// which works correctly in all cases.
+function wrapRangeInMark(range, className, hlId) {
+  // Collect all text nodes within the range
+  const nodes = [];
+  const walker = document.createTreeWalker(
+    range.commonAncestorContainer,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: node => {
+        if (!range.intersectsNode(node)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+
+  // If the common ancestor is itself a text node
+  if (range.commonAncestorContainer.nodeType === Node.TEXT_NODE) {
+    nodes.push(range.commonAncestorContainer);
+  } else {
+    let node;
+    while ((node = walker.nextNode())) nodes.push(node);
+  }
+
+  const spans = [];
+  nodes.forEach(textNode => {
+    // Determine the slice of this text node that falls within the range
+    const nodeStart = textNode === range.startContainer ? range.startOffset : 0;
+    const nodeEnd   = textNode === range.endContainer   ? range.endOffset   : textNode.length;
+    if (nodeStart === nodeEnd) return;
+
     const span = document.createElement('mark');
-    span.className = 'hl-' + color;
-    span.dataset.hlId = uid();
-    range.surroundContents(span);
+    span.className    = className;
+    span.dataset.hlId = hlId;
+
+    // Wrap just the relevant portion of this text node
+    const nodeRange = document.createRange();
+    nodeRange.setStart(textNode, nodeStart);
+    nodeRange.setEnd(textNode, nodeEnd);
+    nodeRange.surroundContents(span);
+    spans.push(span);
+  });
+
+  return spans;
+}
+
+function applyHighlight(range, color, note = '') {
+  if (!range || range.collapsed) {
+    toast('Select some text first', 'info', 1500);
+    return null;
+  }
+
+  const hlId = uid();
+  try {
+    const spans = wrapRangeInMark(range, 'hl-' + color, hlId);
+    if (!spans.length) return null;
 
     const hlData = {
-      id: span.dataset.hlId,
-      text: span.textContent.slice(0, 300),
+      id:           hlId,
+      text:         range.toString().slice(0, 300),
       color,
       note,
       chapterIndex: state.currentChapter,
-      timestamp: Date.now()
+      timestamp:    Date.now()
     };
     state.highlights.push(hlData);
     saveHighlights();
     renderHighlights();
     return hlData;
   } catch(e) {
-    console.warn('Could not apply highlight (complex range):', e);
-    toast('Could not highlight (spans multiple elements)', 'error');
+    console.warn('Highlight failed:', e);
+    toast('Could not highlight that selection', 'error');
     return null;
   }
 }
 
 function applyHighlightsToDOM() {
-  // Re-apply stored highlights for current chapter(s)
-  const chapterHighlights = state.highlights.filter(h =>
+  const relevant = state.highlights.filter(h =>
     state.readingMode === 'continuous' || h.chapterIndex === state.currentChapter
   );
-  // For simplicity, we'll search for text and wrap it
-  chapterHighlights.forEach(hl => {
-    if (document.querySelector(`[data-hl-id="${hl.id}"]`)) return; // already applied
-    const text = hl.text.slice(0, 80);
-    if (!text) return;
-    try {
-      const walker = document.createTreeWalker(readerContent, NodeFilter.SHOW_TEXT);
-      let node;
-      while ((node = walker.nextNode())) {
-        const idx = node.textContent.indexOf(text);
-        if (idx >= 0) {
-          const range = document.createRange();
-          range.setStart(node, idx);
-          range.setEnd(node, idx + text.length);
-          const span = document.createElement('mark');
-          span.className = 'hl-' + hl.color;
-          span.dataset.hlId = hl.id;
-          range.surroundContents(span);
-          break;
-        }
-      }
-    } catch {}
+
+  relevant.forEach(hl => {
+    // Skip if already in DOM (continuous mode re-uses rendered content)
+    if (readerContent.querySelector(`[data-hl-id="${hl.id}"]`)) return;
+
+    const searchText = hl.text.slice(0, 120);
+    if (!searchText) return;
+
+    const walker = document.createTreeWalker(readerContent, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const idx = node.textContent.indexOf(searchText);
+      if (idx < 0) continue;
+      try {
+        const r = document.createRange();
+        r.setStart(node, idx);
+        r.setEnd(node, Math.min(idx + searchText.length, node.length));
+        wrapRangeInMark(r, 'hl-' + hl.color, hl.id);
+      } catch {}
+      break;
+    }
   });
 }
 
@@ -3346,27 +3435,31 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(() => {}); // Graceful fail if sw.js not present
 }
 
-// Continuous scroll — track current chapter
+// Continuous scroll — track current chapter in text reader
 readerScroll.addEventListener('scroll', () => {
   if (state.readingMode !== 'continuous' || !state.chapters.length) return;
   const sections = readerContent.querySelectorAll('.chapter-section');
   const scrollTop = readerScroll.scrollTop + 100;
+  let newChapter = state.currentChapter;
   sections.forEach(sec => {
     if (sec.offsetTop <= scrollTop) {
-      state.currentChapter = parseInt(sec.dataset.chapter) || 0;
+      newChapter = parseInt(sec.dataset.chapter) || 0;
     }
   });
-  updatePageIndicator();
-  updateTOCActive();
+  if (newChapter !== state.currentChapter) {
+    state.currentChapter = newChapter;
+    updatePageIndicator();
+    updateTOCActive();
+    saveProgress(state.currentBook?.id, state.currentChapter);
+  }
 });
 
-// ===== SCROLL-AWARE PROGRESS =====
+// Scroll-aware progress bar in single page mode
 readerScroll.addEventListener('scroll', () => {
-  if (state.readingMode === 'single') {
-    const ratio = readerScroll.scrollTop / (readerScroll.scrollHeight - readerScroll.clientHeight);
-    const chapterProgress = (state.currentChapter + Math.min(1, ratio || 0)) / state.chapters.length;
-    progressBar.style.width = (chapterProgress * 100) + '%';
-  }
+  if (state.readingMode !== 'single' || !state.chapters.length) return;
+  const ratio = readerScroll.scrollTop / (readerScroll.scrollHeight - readerScroll.clientHeight || 1);
+  const progress = (state.currentChapter + Math.min(1, ratio || 0)) / state.chapters.length;
+  progressBar.style.width = (progress * 100) + '%';
 });
 
 // ===== INIT =====
