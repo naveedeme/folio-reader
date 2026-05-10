@@ -2797,34 +2797,49 @@ $('ctx-tts-word').addEventListener('click', () => {
   }
 });
 
-// "Read from here" — collect all text from the selection/caret point to end of chapter
+// "Read from here" — starts TTS from the caret/selection position
 $('ctx-tts-here').addEventListener('click', async () => {
   ctxMenu.classList.remove('active');
 
-  // PDF: extract text from current page onward
+  // PDF: read from current page, no offset needed
   if (state.currentBook?.format === 'PDF') {
     const text = await extractPDFTextForTTS();
-    if (text) startTTS(text, null);
+    if (text) startTTS(text, null, 0);
     return;
   }
 
-  // Text reader: get everything from caret/selection start to end of content
-  let textFromHere = '';
-  const sel = window.getSelection();
+  // For text formats, find the character offset of savedRange in the flat map.
+  // Build a fresh map (DOM may have changed since last TTS run).
+  const map = buildTextNodeMap(readerContent);
+  let startCharOffset = 0;
 
   if (savedRange) {
-    // Clone range from saved anchor to end of reader content
-    const fullRange = document.createRange();
-    fullRange.setStart(savedRange.startContainer, savedRange.startOffset);
-    fullRange.setEndAfter(readerContent.lastChild || readerContent);
-    textFromHere = fullRange.toString().trim();
+    const targetNode   = savedRange.startContainer;
+    const targetOffset = savedRange.startOffset;
+
+    // Walk the map to find the index matching this node+offset
+    for (let i = 0; i < map.map.length; i++) {
+      const entry = map.map[i];
+      if (entry.node === targetNode && entry.offset === targetOffset) {
+        startCharOffset = i;
+        break;
+      }
+    }
   }
 
-  if (!textFromHere) {
-    textFromHere = readerContent.innerText || readerContent.textContent;
-  }
+  // Pass the pre-built map so startTTS doesn't rebuild it again
+  ttsTextMap = map;
+  state.ttsActive = true;
+  ttsBar.classList.add('active');
+  $('tts-play').textContent = '⏸';
+  window.speechSynthesis.cancel();
+  clearTTSHighlight();
 
-  if (textFromHere) startTTS(textFromHere, readerContent);
+  const allSentences = splitSentencesFromFlatText(map.flatText);
+  const firstIdx = startCharOffset > 0
+    ? Math.max(0, allSentences.findIndex(s => s.endIdx > startCharOffset))
+    : 0;
+  speakSentences(allSentences, firstIdx);
 });
 
 // Note Modal
@@ -3029,26 +3044,31 @@ function speakSentences(sentences, index = 0) {
   window.speechSynthesis.speak(utter);
 }
 
-function startTTS(text, rootEl) {
-  if (!text) return;
+function startTTS(text, rootEl, startCharOffset = 0) {
+  if (!text && !rootEl) return;
   window.speechSynthesis.cancel();
   clearTTSHighlight();
   state.ttsActive = true;
   ttsBar.classList.add('active');
   $('tts-play').textContent = '⏸';
 
-  // Build the character map from the live DOM (not from the plain text string)
-  // so highlight positions are always exact
   if (rootEl && state.settings.ttsHighlightLine) {
+    // Build the character map from the live DOM so highlight positions are exact
     ttsTextMap = buildTextNodeMap(rootEl);
-    const sentences = splitSentencesFromFlatText(ttsTextMap.flatText);
-    speakSentences(sentences, 0);
+    const allSentences = splitSentencesFromFlatText(ttsTextMap.flatText);
+    // Find the first sentence whose end is past the requested start offset
+    const firstIdx = startCharOffset > 0
+      ? Math.max(0, allSentences.findIndex(s => s.endIdx > startCharOffset))
+      : 0;
+    speakSentences(allSentences, firstIdx);
   } else {
-    // PDF or highlight-off: no map needed, speak plain text in chunks
+    // PDF or highlight-off: build map from plain text, apply startCharOffset
     ttsTextMap = null;
-    const sentences = splitSentencesFromFlatText(text)
-      .map(s => ({ ...s })); // keep shape consistent
-    speakSentences(sentences, 0);
+    const allSentences = splitSentencesFromFlatText(text || '');
+    const firstIdx = startCharOffset > 0
+      ? Math.max(0, allSentences.findIndex(s => s.endIdx > startCharOffset))
+      : 0;
+    speakSentences(allSentences, firstIdx);
   }
 }
 
