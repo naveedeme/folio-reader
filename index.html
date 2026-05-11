@@ -2780,11 +2780,11 @@ $('ctx-tts-word').addEventListener('click', () => {
     }
   }
   if (word) {
-    // Speak just the word without affecting any ongoing read
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(word.trim());
     u.rate = parseFloat($('tts-rate').value);
     window.speechSynthesis.speak(u);
+    window.getSelection()?.removeAllRanges();
     toast('Reading: ' + word.trim(), 'info', 1500);
   }
 });
@@ -2819,8 +2819,8 @@ $('ctx-tts-here').addEventListener('click', async () => {
     }
   }
 
-  // Pass the pre-built map so startTTS doesn't rebuild it again
-  ttsTextMap = map;
+  // Clear the visible text selection now that we have the offset
+  window.getSelection()?.removeAllRanges();
   state.ttsActive = true;
   ttsBar.classList.add('active');
   $('tts-play').textContent = '⏸';
