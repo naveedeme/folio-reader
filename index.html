@@ -3028,8 +3028,20 @@ function highlightTTSSentence(sentence) {
     getTTSOverlay();
     drawTTSOverlay();
 
-    // Scroll the sentence into view using the actual DOM node
-    startEntry.node.parentElement?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    // Ensure the sentence is comfortably visible — not buried at the bottom edge.
+    // We target ~35% from the top of the scroll container.
+    const firstRect    = range.getBoundingClientRect();
+    const scrollRect   = readerScroll.getBoundingClientRect();
+    const sentenceTop  = firstRect.top  - scrollRect.top;   // px from visible top
+    const sentenceBot  = firstRect.bottom - scrollRect.top; // px from visible top
+    const visibleH     = readerScroll.clientHeight;
+    const targetTop    = visibleH * 0.35;                   // ideal position
+
+    // Only scroll if sentence is below the bottom 65% mark or above the top 10%
+    if (sentenceBot > visibleH * 0.80 || sentenceTop < visibleH * 0.10) {
+      const delta = sentenceTop - targetTop;
+      readerScroll.scrollBy({ top: delta, behavior: 'smooth' });
+    }
   } catch(e) {
     // Range failed — skip highlight, reading continues
   }
