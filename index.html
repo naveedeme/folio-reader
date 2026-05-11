@@ -2964,18 +2964,18 @@ let ttsOverlay  = null;   // the single overlay element, created once
 function getTTSOverlay() {
   if (ttsOverlay && ttsOverlay.isConnected) return ttsOverlay;
 
-  // Create a full-size transparent overlay positioned over reader-scroll
+  // Fixed overlay covering the full viewport — no coordinate conversion needed
+  // because getClientRects() already returns viewport-relative coordinates.
   ttsOverlay = document.createElement('div');
   ttsOverlay.id = 'tts-overlay';
   ttsOverlay.style.cssText = [
-    'position:absolute',
+    'position:fixed',
     'inset:0',
     'pointer-events:none',
     'z-index:20',
     'overflow:hidden',
   ].join(';');
-  readerScroll.style.position = 'relative';
-  readerScroll.appendChild(ttsOverlay);
+  document.body.appendChild(ttsOverlay);
   return ttsOverlay;
 }
 
@@ -3000,33 +3000,31 @@ function highlightTTSSentence(sentence) {
     range.setStart(startEntry.node, startEntry.offset);
     range.setEnd(endEntry.node, endEntry.offset + 1);
 
-    // getClientRects() returns one rect per visual line — handles wrapping
-    const rects      = Array.from(range.getClientRects());
-    const scrollRect = readerScroll.getBoundingClientRect();
-    const overlay    = getTTSOverlay();
+    // getClientRects() returns viewport-relative rects, one per visual line.
+    // The fixed overlay uses the same coordinate space — paint directly.
+    const rects   = Array.from(range.getClientRects());
+    const overlay = getTTSOverlay();
 
     rects.forEach(rect => {
+      if (rect.width < 1 || rect.height < 1) return; // skip degenerate rects
       const mark = document.createElement('div');
       mark.style.cssText = [
         'position:absolute',
-        `left:${rect.left - scrollRect.left + readerScroll.scrollLeft}px`,
-        `top:${rect.top  - scrollRect.top  + readerScroll.scrollTop}px`,
+        `left:${rect.left}px`,
+        `top:${rect.top}px`,
         `width:${rect.width}px`,
         `height:${rect.height}px`,
         'background:rgba(212,147,90,0.28)',
         'border-radius:2px',
-        'outline:1.5px solid rgba(212,147,90,0.5)',
+        'outline:1.5px solid rgba(212,147,90,0.45)',
       ].join(';');
       overlay.appendChild(mark);
     });
 
-    // Scroll the first rect into view
-    if (rects.length) {
-      const firstMark = overlay.firstChild;
-      if (firstMark) firstMark.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
+    // Scroll using the DOM node itself — not the overlay rect
+    startEntry.node.parentElement?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   } catch(e) {
-    // Range failed — skip, continue reading
+    // Range failed — skip highlight, reading continues uninterrupted
   }
 }
 
