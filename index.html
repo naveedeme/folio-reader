@@ -3320,8 +3320,32 @@ setupDropZone($('welcome-drop'), dt => {
 // Keyboard shortcuts
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  // Space — TTS play / pause / resume
+  if (e.key === ' ') {
+    e.preventDefault(); // stop page scroll
+    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+      window.speechSynthesis.pause();
+      $('tts-play').textContent = '▶';
+    } else if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+      $('tts-play').textContent = '⏸';
+      // Redraw the overlay — browser may clear it while paused
+      if (ttsActiveRange) drawTTSOverlay();
+    } else if (state.currentBook && !state.ttsActive) {
+      // Nothing playing — start from the current page
+      ttsBar.classList.add('active');
+      if (state.currentBook.format === 'PDF') {
+        extractPDFTextForTTS().then(text => { if (text) startTTS(text, null); });
+      } else {
+        startTTS(readerContent.innerText || readerContent.textContent, readerContent);
+      }
+    }
+    return;
+  }
+
   if (e.key === 'ArrowRight' || e.key === 'ArrowDown') nextPage();
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') prevPage();
+  if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   prevPage();
   if (e.key === 'Escape') {
     ctxMenu.classList.remove('active');
     searchBar.classList.remove('active');
