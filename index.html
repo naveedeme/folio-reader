@@ -2958,14 +2958,12 @@ function splitSentencesFromFlatText(flatText) {
 // Range.getClientRects() gives us the exact bounding boxes of any range —
 // even across element boundaries — with no DOM changes at all.
 
-let ttsTextMap  = null;
-let ttsOverlay  = null;   // the single overlay element, created once
+let ttsTextMap    = null;
+let ttsOverlay    = null;
+let ttsActiveRange = null;  // the Range currently being highlighted; redrawn on scroll
 
 function getTTSOverlay() {
   if (ttsOverlay && ttsOverlay.isConnected) return ttsOverlay;
-
-  // Fixed overlay covering the full viewport — no coordinate conversion needed
-  // because getClientRects() already returns viewport-relative coordinates.
   ttsOverlay = document.createElement('div');
   ttsOverlay.id = 'tts-overlay';
   ttsOverlay.style.cssText = [
@@ -2979,7 +2977,33 @@ function getTTSOverlay() {
   return ttsOverlay;
 }
 
+// Paint the overlay rects from the stored range's current viewport positions.
+// Called on highlight and on every scroll so rects track the scrolling text.
+function drawTTSOverlay() {
+  if (!ttsOverlay) return;
+  ttsOverlay.innerHTML = '';
+  if (!ttsActiveRange) return;
+
+  const rects = Array.from(ttsActiveRange.getClientRects());
+  rects.forEach(rect => {
+    if (rect.width < 1 || rect.height < 1) return;
+    const mark = document.createElement('div');
+    mark.style.cssText = [
+      'position:absolute',
+      `left:${rect.left}px`,
+      `top:${rect.top}px`,
+      `width:${rect.width}px`,
+      `height:${rect.height}px`,
+      'background:rgba(212,147,90,0.28)',
+      'border-radius:2px',
+      'outline:1.5px solid rgba(212,147,90,0.45)',
+    ].join(';');
+    ttsOverlay.appendChild(mark);
+  });
+}
+
 function clearTTSHighlight() {
+  ttsActiveRange = null;
   if (ttsOverlay) ttsOverlay.innerHTML = '';
 }
 
@@ -3000,33 +3024,21 @@ function highlightTTSSentence(sentence) {
     range.setStart(startEntry.node, startEntry.offset);
     range.setEnd(endEntry.node, endEntry.offset + 1);
 
-    // getClientRects() returns viewport-relative rects, one per visual line.
-    // The fixed overlay uses the same coordinate space — paint directly.
-    const rects   = Array.from(range.getClientRects());
-    const overlay = getTTSOverlay();
+    ttsActiveRange = range;
+    getTTSOverlay();
+    drawTTSOverlay();
 
-    rects.forEach(rect => {
-      if (rect.width < 1 || rect.height < 1) return; // skip degenerate rects
-      const mark = document.createElement('div');
-      mark.style.cssText = [
-        'position:absolute',
-        `left:${rect.left}px`,
-        `top:${rect.top}px`,
-        `width:${rect.width}px`,
-        `height:${rect.height}px`,
-        'background:rgba(212,147,90,0.28)',
-        'border-radius:2px',
-        'outline:1.5px solid rgba(212,147,90,0.45)',
-      ].join(';');
-      overlay.appendChild(mark);
-    });
-
-    // Scroll using the DOM node itself — not the overlay rect
+    // Scroll the sentence into view using the actual DOM node
     startEntry.node.parentElement?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   } catch(e) {
-    // Range failed — skip highlight, reading continues uninterrupted
+    // Range failed — skip highlight, reading continues
   }
 }
+
+// Redraw on scroll so the fixed overlay tracks the scrolling text
+readerScroll.addEventListener('scroll', () => {
+  if (ttsActiveRange) drawTTSOverlay();
+}, { passive: true });
 
 // ── Sequential sentence speaker ───────────────────────────────────────────────
 function speakSentences(sentences, index = 0) {
