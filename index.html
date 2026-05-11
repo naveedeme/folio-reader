@@ -1407,6 +1407,7 @@ const state = {
   searchIndex: 0,
   ttsUtterance: null,
   ttsActive: false,
+  ttsPaused: false,      // true while paused; distinct from !ttsActive
   ttsSentences: null,    // sentence array currently being spoken
   ttsSentenceIdx: 0,     // index into ttsSentences
   pendingHighlight: null, // { range, color }
@@ -3056,11 +3057,7 @@ readerScroll.addEventListener('scroll', () => {
 // ── Sequential sentence speaker ───────────────────────────────────────────────
 function speakSentences(sentences, index = 0) {
   if (index >= sentences.length) {
-    state.ttsActive      = false;
-    state.ttsSentences   = null;
-    state.ttsSentenceIdx = 0;
-    $('tts-play').textContent = '▶';
-    clearTTSHighlight();
+    ttsSetStopped();
     return;
   }
 
@@ -3080,7 +3077,7 @@ function speakSentences(sentences, index = 0) {
   if (voice) utter.voice = voice;
 
   utter.onend = () => {
-    if (!state.ttsActive) return;
+    if (!state.ttsActive || state.ttsPaused) return;
     speakSentences(sentences, index + 1);
   };
   utter.onerror = e => {
@@ -3099,8 +3096,9 @@ function startTTS(text, rootEl, startCharOffset = 0) {
   window.speechSynthesis.cancel();
   clearTTSHighlight();
   state.ttsActive = true;
+  state.ttsPaused = false;
   ttsBar.classList.add('active');
-  $('tts-play').textContent = '⏸';
+  ttsSetPlaying();
 
   // Build the map once from the live DOM — never mutated, always accurate
   const mapRoot = rootEl || null;
@@ -3146,38 +3144,69 @@ function populateTTSVoices() {
 // Voices load asynchronously in some browsers
 window.speechSynthesis.onvoiceschanged = populateTTSVoices;
 
-$('tts-play').addEventListener('click', async () => {
-  if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-    window.speechSynthesis.pause();
-    $('tts-play').textContent = '▶';
-  } else if (window.speechSynthesis.paused) {
-    window.speechSynthesis.resume();
-    $('tts-play').textContent = '⏸';
-  } else {
-    if (state.currentBook?.format === 'PDF') {
-      const text = await extractPDFTextForTTS();
-      startTTS(text, null);
+// ===== TTS CONTROLS =====
+// We never query speechSynthesis.speaking/.paused — these are unreliable in
+// Chrome (silent 15s timeout bug) and vary across browsers.
+// state.ttsActive and state.ttsPaused are the single source of truth.
+
+function ttsSetPlaying() {
+  state.ttsPaused = false;
+  $('tts-play').textContent = '⏸';
+}
+function ttsSetPaused() {
+  state.ttsPaused = true;
+  $('tts-play').textContent = '▶';
+}
+function ttsSetStopped() {
+  state.ttsActive = false;
+  state.ttsPaused = false;
+  state.ttsSentences   = null;
+  state.ttsSentenceIdx = 0;
+  $('tts-play').textContent = '▶';
+  clearTTSHighlight();
+}
+
+function ttsPause() {
+  window.speechSynthesis.pause();
+  ttsSetPaused();
+}
+function ttsResume() {
+  window.speechSynthesis.resume();
+  ttsSetPlaying();
+  if (ttsActiveRange) drawTTSOverlay();
+}
+function ttsStop() {
+  window.speechSynthesis.cancel();
+  ttsSetStopped();
+}
+
+function ttsTogglePlayPause() {
+  if (!state.ttsActive) {
+    // Nothing running — start from current page
+    if (!state.currentBook) return;
+    ttsBar.classList.add('active');
+    if (state.currentBook.format === 'PDF') {
+      extractPDFTextForTTS().then(text => { if (text) startTTS(text, null); });
     } else {
       startTTS(readerContent.innerText || readerContent.textContent, readerContent);
     }
+  } else if (state.ttsPaused) {
+    ttsResume();
+  } else {
+    ttsPause();
   }
-});
+}
+
+$('tts-play').addEventListener('click', ttsTogglePlayPause);
 
 $('tts-stop').addEventListener('click', () => {
-  window.speechSynthesis.cancel();
-  state.ttsActive = false;
-  clearTTSHighlight();
-  $('tts-play').textContent = '▶';
+  ttsStop();
   ttsBar.classList.remove('active');
 });
 
 $('btn-tts').addEventListener('click', () => {
   ttsBar.classList.toggle('active');
-  if (!ttsBar.classList.contains('active')) {
-    window.speechSynthesis.cancel();
-    state.ttsActive = false;
-    clearTTSHighlight();
-  }
+  if (!ttsBar.classList.contains('active')) ttsStop();
 });
 
 // Rate change: cancel and restart from the current sentence with the new rate
@@ -3187,6 +3216,8 @@ $('tts-rate').addEventListener('input', () => {
 
   if (state.ttsActive && state.ttsSentences) {
     window.speechSynthesis.cancel();
+    state.ttsPaused = false;
+    ttsSetPlaying();
     setTimeout(() => {
       if (!state.ttsActive) return;
       speakSentences(state.ttsSentences, state.ttsSentenceIdx ?? 0);
@@ -3321,26 +3352,9 @@ setupDropZone($('welcome-drop'), dt => {
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
 
-  // Space — TTS play / pause / resume
   if (e.key === ' ') {
-    e.preventDefault(); // stop page scroll
-    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-      window.speechSynthesis.pause();
-      $('tts-play').textContent = '▶';
-    } else if (window.speechSynthesis.paused) {
-      window.speechSynthesis.resume();
-      $('tts-play').textContent = '⏸';
-      // Redraw the overlay — browser may clear it while paused
-      if (ttsActiveRange) drawTTSOverlay();
-    } else if (state.currentBook && !state.ttsActive) {
-      // Nothing playing — start from the current page
-      ttsBar.classList.add('active');
-      if (state.currentBook.format === 'PDF') {
-        extractPDFTextForTTS().then(text => { if (text) startTTS(text, null); });
-      } else {
-        startTTS(readerContent.innerText || readerContent.textContent, readerContent);
-      }
-    }
+    e.preventDefault();
+    ttsTogglePlayPause();
     return;
   }
 
