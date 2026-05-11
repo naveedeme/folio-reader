@@ -648,14 +648,6 @@ input:focus, select:focus { border-color: var(--accent); }
 .hl-pink   { background: rgba(255,80,160,0.3); border-radius: 2px; }
 .hl-orange { background: rgba(255,140,50,0.35); border-radius: 2px; }
 
-/* TTS active sentence highlight */
-.tts-reading-line {
-  background: rgba(212,147,90,0.28);
-  border-radius: 2px;
-  outline: 1.5px solid rgba(212,147,90,0.5);
-  transition: background 0.2s;
-}
-
 /* ===== AUTO-HIDE TOOLBAR ===== */
 /*
  * Strategy: toolbar is position:sticky at top:0 inside the column flex body.
@@ -2833,7 +2825,7 @@ $('ctx-tts-here').addEventListener('click', async () => {
   ttsBar.classList.add('active');
   $('tts-play').textContent = '⏸';
   window.speechSynthesis.cancel();
-  clearTTSHighlight(true);
+  clearTTSHighlight();
 
   const allSentences = splitSentencesFromFlatText(map.flatText);
   const firstIdx = startCharOffset > 0
@@ -2961,38 +2953,39 @@ function splitSentencesFromFlatText(flatText) {
 }
 
 // ── TTS highlight state ───────────────────────────────────────────────────────
-let ttsHighlightSpans = [];
-let ttsTextMap        = null;
-let ttsRootEl         = null;   // element the map was built from
+// We never mutate the DOM to highlight. Instead we paint coloured rectangles
+// onto a transparent overlay <div> that sits above reader-content.
+// Range.getClientRects() gives us the exact bounding boxes of any range —
+// even across element boundaries — with no DOM changes at all.
 
-// Unwrap spans. andNormalize=true only when TTS fully stops —
-// never between sentences, because normalize() invalidates map node refs.
-function clearTTSHighlight(andNormalize = false) {
-  ttsHighlightSpans.forEach(span => {
-    if (!span.parentNode) return;
-    const parent = span.parentNode;
-    span.replaceWith(...span.childNodes);
-    if (andNormalize) parent.normalize();
-  });
-  ttsHighlightSpans = [];
+let ttsTextMap  = null;
+let ttsOverlay  = null;   // the single overlay element, created once
+
+function getTTSOverlay() {
+  if (ttsOverlay && ttsOverlay.isConnected) return ttsOverlay;
+
+  // Create a full-size transparent overlay positioned over reader-scroll
+  ttsOverlay = document.createElement('div');
+  ttsOverlay.id = 'tts-overlay';
+  ttsOverlay.style.cssText = [
+    'position:absolute',
+    'inset:0',
+    'pointer-events:none',
+    'z-index:20',
+    'overflow:hidden',
+  ].join(';');
+  readerScroll.style.position = 'relative';
+  readerScroll.appendChild(ttsOverlay);
+  return ttsOverlay;
 }
 
-// Rebuild the map after unwrapping (which leaves split text nodes).
-// Called once per sentence, just before highlighting.
-function rebuildTTSMap() {
-  if (ttsRootEl) ttsTextMap = buildTextNodeMap(ttsRootEl);
+function clearTTSHighlight() {
+  if (ttsOverlay) ttsOverlay.innerHTML = '';
 }
 
 function highlightTTSSentence(sentence) {
-  if (!sentence) return;
-
-  // Unwrap previous mark WITHOUT normalizing
-  clearTTSHighlight(false);
-
-  // Rebuild the map now — split text nodes from the previous unwrap are
-  // visible and have correct offsets; this map will be accurate
-  rebuildTTSMap();
-  if (!ttsTextMap) return;
+  if (!sentence || !ttsTextMap) return;
+  clearTTSHighlight();
 
   const { map } = ttsTextMap;
   const { startIdx, endIdx } = sentence;
@@ -3006,11 +2999,34 @@ function highlightTTSSentence(sentence) {
     const range = document.createRange();
     range.setStart(startEntry.node, startEntry.offset);
     range.setEnd(endEntry.node, endEntry.offset + 1);
-    const spans = wrapRangeInMark(range, 'tts-reading-line', 'tts-current');
-    ttsHighlightSpans = spans;
-    if (spans.length) spans[0].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+    // getClientRects() returns one rect per visual line — handles wrapping
+    const rects      = Array.from(range.getClientRects());
+    const scrollRect = readerScroll.getBoundingClientRect();
+    const overlay    = getTTSOverlay();
+
+    rects.forEach(rect => {
+      const mark = document.createElement('div');
+      mark.style.cssText = [
+        'position:absolute',
+        `left:${rect.left - scrollRect.left + readerScroll.scrollLeft}px`,
+        `top:${rect.top  - scrollRect.top  + readerScroll.scrollTop}px`,
+        `width:${rect.width}px`,
+        `height:${rect.height}px`,
+        'background:rgba(212,147,90,0.28)',
+        'border-radius:2px',
+        'outline:1.5px solid rgba(212,147,90,0.5)',
+      ].join(';');
+      overlay.appendChild(mark);
+    });
+
+    // Scroll the first rect into view
+    if (rects.length) {
+      const firstMark = overlay.firstChild;
+      if (firstMark) firstMark.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
   } catch(e) {
-    // Range failed — skip highlight for this sentence, continue reading
+    // Range failed — skip, continue reading
   }
 }
 
@@ -3021,7 +3037,7 @@ function speakSentences(sentences, index = 0) {
     state.ttsSentences   = null;
     state.ttsSentenceIdx = 0;
     $('tts-play').textContent = '▶';
-    clearTTSHighlight(true);
+    clearTTSHighlight();
     return;
   }
 
@@ -3029,7 +3045,6 @@ function speakSentences(sentences, index = 0) {
   const voice    = getSelectedVoice();
   const rate     = parseFloat($('tts-rate').value);
 
-  // Highlight before speaking so the mark is visible from the first word
   if (state.settings.ttsHighlightLine && readerContent.isConnected) {
     highlightTTSSentence(sentence);
   }
@@ -3059,15 +3074,15 @@ function speakSentences(sentences, index = 0) {
 function startTTS(text, rootEl, startCharOffset = 0) {
   if (!text && !rootEl) return;
   window.speechSynthesis.cancel();
-  clearTTSHighlight(true);  // full stop — safe to normalize here
+  clearTTSHighlight();
   state.ttsActive = true;
   ttsBar.classList.add('active');
   $('tts-play').textContent = '⏸';
 
-  ttsRootEl = rootEl || null;
-
-  if (rootEl && state.settings.ttsHighlightLine) {
-    ttsTextMap = buildTextNodeMap(rootEl);
+  // Build the map once from the live DOM — never mutated, always accurate
+  const mapRoot = rootEl || null;
+  if (mapRoot) {
+    ttsTextMap = buildTextNodeMap(mapRoot);
     const allSentences = splitSentencesFromFlatText(ttsTextMap.flatText);
     const firstIdx = startCharOffset > 0
       ? Math.max(0, allSentences.findIndex(s => s.endIdx > startCharOffset))
@@ -3128,7 +3143,7 @@ $('tts-play').addEventListener('click', async () => {
 $('tts-stop').addEventListener('click', () => {
   window.speechSynthesis.cancel();
   state.ttsActive = false;
-  clearTTSHighlight(true);
+  clearTTSHighlight();
   $('tts-play').textContent = '▶';
   ttsBar.classList.remove('active');
 });
@@ -3138,7 +3153,7 @@ $('btn-tts').addEventListener('click', () => {
   if (!ttsBar.classList.contains('active')) {
     window.speechSynthesis.cancel();
     state.ttsActive = false;
-    clearTTSHighlight(true);
+    clearTTSHighlight();
   }
 });
 
@@ -3151,10 +3166,6 @@ $('tts-rate').addEventListener('input', () => {
     window.speechSynthesis.cancel();
     setTimeout(() => {
       if (!state.ttsActive) return;
-      // Rebuild map after normalize() may have merged text nodes
-      if (readerContent.isConnected && state.currentBook?.format !== 'PDF') {
-        ttsTextMap = buildTextNodeMap(readerContent);
-      }
       speakSentences(state.ttsSentences, state.ttsSentenceIdx ?? 0);
     }, 120);
   }
@@ -3374,16 +3385,13 @@ $('sp-tts-voice').addEventListener('change', e => {
     window.speechSynthesis.cancel();
     setTimeout(() => {
       if (!state.ttsActive) return;
-      if (readerContent.isConnected && state.currentBook?.format !== 'PDF') {
-        ttsTextMap = buildTextNodeMap(readerContent);
-      }
       speakSentences(state.ttsSentences, state.ttsSentenceIdx ?? 0);
     }, 120);
   }
 });
 $('sp-tts-highlight').addEventListener('change', e => {
   state.settings.ttsHighlightLine = e.target.checked;
-  if (!e.target.checked) clearTTSHighlight(true);
+  if (!e.target.checked) clearTTSHighlight();
   saveSettings();
 });
 $('sp-auto-hide-toolbar').addEventListener('change', e => {
