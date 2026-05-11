@@ -2821,6 +2821,7 @@ $('ctx-tts-here').addEventListener('click', async () => {
 
   // Clear the visible text selection now that we have the offset
   window.getSelection()?.removeAllRanges();
+  ttsTextMap = map;
   state.ttsActive = true;
   ttsBar.classList.add('active');
   $('tts-play').textContent = '⏸';
