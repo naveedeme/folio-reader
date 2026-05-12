@@ -3078,11 +3078,19 @@ function speakSentences(sentences, index = 0) {
 
   utter.onend = () => {
     if (!state.ttsActive || state.ttsPaused) return;
-    speakSentences(sentences, index + 1);
+    // Small delay prevents Chrome from swallowing the next speak() call
+    // when it is issued synchronously inside onend
+    setTimeout(() => {
+      if (!state.ttsActive || state.ttsPaused) return;
+      speakSentences(sentences, index + 1);
+    }, 50);
   };
   utter.onerror = e => {
     if (e.error === 'interrupted') return;
-    speakSentences(sentences, index + 1);
+    setTimeout(() => {
+      if (!state.ttsActive || state.ttsPaused) return;
+      speakSentences(sentences, index + 1);
+    }, 50);
   };
 
   state.ttsUtterance   = utter;
@@ -3148,21 +3156,42 @@ window.speechSynthesis.onvoiceschanged = populateTTSVoices;
 // We never query speechSynthesis.speaking/.paused — these are unreliable in
 // Chrome (silent 15s timeout bug) and vary across browsers.
 // state.ttsActive and state.ttsPaused are the single source of truth.
+//
+// Chrome keepalive: the engine silently stops after ~14s of continuous speech.
+// We pause/resume every 12 seconds to reset its internal watchdog timer.
+let ttsKeepaliveTimer = null;
+
+function startTTSKeepalive() {
+  stopTTSKeepalive();
+  ttsKeepaliveTimer = setInterval(() => {
+    if (state.ttsActive && !state.ttsPaused) {
+      window.speechSynthesis.pause();
+      window.speechSynthesis.resume();
+    }
+  }, 12000);
+}
+
+function stopTTSKeepalive() {
+  if (ttsKeepaliveTimer) { clearInterval(ttsKeepaliveTimer); ttsKeepaliveTimer = null; }
+}
 
 function ttsSetPlaying() {
   state.ttsPaused = false;
   $('tts-play').textContent = '⏸';
+  startTTSKeepalive();
 }
 function ttsSetPaused() {
   state.ttsPaused = true;
   $('tts-play').textContent = '▶';
+  stopTTSKeepalive();
 }
 function ttsSetStopped() {
-  state.ttsActive = false;
-  state.ttsPaused = false;
+  state.ttsActive      = false;
+  state.ttsPaused      = false;
   state.ttsSentences   = null;
   state.ttsSentenceIdx = 0;
   $('tts-play').textContent = '▶';
+  stopTTSKeepalive();
   clearTTSHighlight();
 }
 
@@ -3444,6 +3473,8 @@ $('sp-tts-voice').addEventListener('change', e => {
 
   if (state.ttsActive && state.ttsSentences) {
     window.speechSynthesis.cancel();
+    state.ttsPaused = false;
+    ttsSetPlaying();
     setTimeout(() => {
       if (!state.ttsActive) return;
       speakSentences(state.ttsSentences, state.ttsSentenceIdx ?? 0);
