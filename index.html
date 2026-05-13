@@ -3077,19 +3077,28 @@ function speakSentences(sentences, index = 0) {
   if (voice) utter.voice = voice;
 
   utter.onend = () => {
-    if (!state.ttsActive || state.ttsPaused) return;
-    // Small delay prevents Chrome from swallowing the next speak() call
-    // when it is issued synchronously inside onend
+    if (!state.ttsActive) return;
+
+    const nextIdx = index + 1;
+    state.ttsSentenceIdx = nextIdx; // always advance, even if paused
+
+    if (state.ttsPaused) {
+      // Paused between sentences — store index, wait for ttsResume()
+      return;
+    }
     setTimeout(() => {
       if (!state.ttsActive || state.ttsPaused) return;
-      speakSentences(sentences, index + 1);
+      speakSentences(sentences, nextIdx);
     }, 50);
   };
   utter.onerror = e => {
     if (e.error === 'interrupted') return;
+    const nextIdx = index + 1;
+    state.ttsSentenceIdx = nextIdx;
+    if (state.ttsPaused) return;
     setTimeout(() => {
       if (!state.ttsActive || state.ttsPaused) return;
-      speakSentences(sentences, index + 1);
+      speakSentences(sentences, nextIdx);
     }, 50);
   };
 
@@ -3200,9 +3209,17 @@ function ttsPause() {
   ttsSetPaused();
 }
 function ttsResume() {
-  window.speechSynthesis.resume();
   ttsSetPlaying();
   if (ttsActiveRange) drawTTSOverlay();
+
+  // If there is an actual paused utterance in the engine, resume it.
+  // If we were paused between sentences (utterance already ended),
+  // start the next sentence directly instead.
+  if (window.speechSynthesis.paused) {
+    window.speechSynthesis.resume();
+  } else if (state.ttsSentences && state.ttsSentenceIdx < state.ttsSentences.length) {
+    speakSentences(state.ttsSentences, state.ttsSentenceIdx);
+  }
 }
 function ttsStop() {
   window.speechSynthesis.cancel();
